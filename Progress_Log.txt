@@ -1,0 +1,228 @@
+setuptools              58.1.0  - default version
+downgraded to 42.0.0
+export PATH='/home/erdos/.local/bin' (inside docker)
+sudo docker exec -i -t pylot sudo chown erdos /usr/local/lib/python3.8/dist-packages/
+
+export PYTHONPATH=/home/levantepaksy/CARLA_0.9.15/PythonAPI/carla
+
+
+
+June 12 2024
+synchronisation issue  persists, however slightly differently compared to on paperspace
+it seems as though the scenario is being saved/recorded(?) by the agent and then being replayed in the prediction window
+could try visualising waypoints/detection and compare with prediction feed - might be a probem with the prediction feed
+doesn't seem to  be a hardware issue given that when the scenario does play out in the prediction window the speed seems to be similar to that of the scenario
+prediction feed doesnt seem to be in realtime
+
+
+June 13 2024
+Setting simulator_fps flag in pylot to 200-300 seems to freeze the prediction feed but also reduces scenario runner playback speed - could be the key to synchronosation
+setting -benchmark -fps=200 doesnt seem to affect CARLA, despite documentation
+could try looking into redis to synchronise SR and pylot
+could try injecting into other prediction algorithms instead
+worst case - try injecting into realtime object detection? - in which case will not be able to inject trajectory, but individual future coordinates
+
+
+June 16 2024
+Trying to fix 'Pseudo-Asynchronous' mode
+Removed 'pose_stream_for_control' from 'add_planning_pose_synchronizer()' in line 189 of 'pylot.py' to circumvent argument number mismatch error
+Lead to 'AttributeError: 'WriteStream' object has no attribute 'send_pickled'' in line 84 of 'carla_camera_driver_operator.py'
+'send_pickle' seems to have been deprecated in erdos at one point with plans to reintroduce --> https://github.com/erdos-project/pylot/pull/233
+try workaround shown in above github thread
+Workaround results in - KeyError: [xxxxx] at 'self._camera_stream.send(self._messages[timestamp])'
+
+
+June 17 2024
+Using pylot flag '--visualize_waypoints' rather than '--visualize_prediction' seems to fix/improve the synchronisation issue - problem seems to be with prediction visualiser
+Try visualising predicted trajectory in the waypoint visualiser --> 'waypoints.py' 
+
+
+June 19 2024
+Edited 'visualizer_operator.py' and 'obstacle_prediction.py' to display predicted trajectory on CARLA world.
+Needs extensive modification for it to work, but general concept/idea should be fine.
+
+
+June 20 2024
+General work on 'visualizer_operator.py' and 'obstacle_prediction.py'
+No errors but doesn't display camera feed on pylot side and no prediction is visible on simulator/SR side
+
+
+June 23 2024
+Plan to visualise prediction temporarily halted.
+Decided to use '--evaluate_prediction' flag in pylot instead to verify the accuracy of the injected prediction
+
+python3 pylot.py --scenario_runner --flagfile=configs/thesis.conf --simulator_fps 20 --simulator_mode synchronous --evaluate_prediction --log_file_name=pseudo_linear_test.log --csv_log_file_name=pseudo_linear_test.csv --target_speed 0 --prediction_radius 1000
+
+'--evaluate_prediction': error very small @ early stage of scenario but grows rapidly
+Check 'prediction_eval_operator.py' - this is where 'to_world_coordinates' function is used
+
+Also modify 'linear_prediction_operator.py' as necessary
+
+
+June 26 2024
+Injection didn't seem to work - constant error
+Rewrite injection code
+In 'prediction_eval_operator.py', both 'obstacle_trajectory' (groundtruth) and 'obstacle_prediction' are converted to world coordinates before calculating errors
+
+Dividing 'adv_trajectory' by 'ego_loc' in 'linear_predictor_operator.py' reduced error but still large error  
+
+Try printing 'obstacle_trajectory' and 'obstacle_prediction' before and after conversion from 'prediction_eval_operator.py' 
+
+
+June 28 2024
+Edited 'prediction_eval_operator.py' to log 'obstacle_trajectory' and 'obstacle_prediction'
+
+Y-coordinate seems to be fairly close but X-coordinate seems to be off
+Injected coordinates don't seem to be updating(?)
+No significant change was observed for before and after conversion to world coordinates - before conversion will be ignored
+
+Ground truth matches pre-recorded/injected Adversary_Locations.csv data - problem most likely occurs in the injection process
+
+Yet to find out how to properly inject trajectory  
+
+
+July 1 2024
+Location data fed into actual linear prediction confirmed to be in relative coordinates, with x-value being ~20 (m)
+
+Cause of error discovered: Current frame is always greater than the number of frames in input csv file because frame is counted from the launching of CARLA and not from start of the scenario in SR
+Therefore cannot use simulator frames as key to the list of predictions - have to implement own clock/or use Pylot's clock 
+
+Using Pylot's clock seems to have fixed the above issue but evaluator still shows the same l1 and l2 errors - simply using the calculated relative coordinates fixed issue
+
+Errors are now at acceptable levels for static ego and adversary
+MSD is: 0.0306
+Vehicle ADE is: 0.0379
+Vehicle FDE is: 0.0379
+
+Will need to test with non-static ego and adversary - will need a create a different scenario where the adversary is only stationary for the first 5-10 seconds - 10 is probably safer as it takes about 10 simulator seconds for Pylot to start operating
+
+Possibly a better approach to solve the simulator timestamp issue - request a reference frame from CARLA at the start, and then when querying the current frame number from CARLA for every prediction loop, simply take away the initial reference frame: current_frame = current_frame - ref_frame
+The initial implementation of the above approach did not yield good results: current frame number higher than total frames in csv
+If cannot be adequately implemented, revert to working method based on Pylot's clock 
+
+
+July 3 2024 - Biggest breakthrough yet
+Try using CARLA's timestamp again - abandon if doesn't seem to work properly
+
+Use CARLA Autopilot to evaluate prediction (injection) when ego is moving - CARLA Autopilot is rule-based and should drive at a safe distance behind adversary vehicle therefore will not alter the path/velocity of the adversary by crashing into it 
+
+python3 pylot.py --scenario_runner --flagfile=configs/thesis.conf --simulator_fps 20 --simulator_mode synchronous --evaluate_prediction --log_file_name=pseudo_linear_test.log --csv_log_file_name=pseudo_linear_test.csv --prediction_radius 1000 --target_speed 10
+
+With moving ego, max error shoots up to ~60
+Also sync issue still seems to be present, but possibly only a visualisation issue
+Ground truth changes @ every timestep, but prediction stays the same until next timestep in seconds is reached - pylot timestep (ms) is converted to frames by dividing by 1000 and multipying by framerate, so anything less than seconds is discarded returning the same prediction values until next second reached --> Try implementing for loop to iterate over data between the seconds - implemented! 
+
+Also, re-record scenario @ 20 fps 
+python3 scenario_runner.py --openscenario srunner/examples/BrakeCheckScenario.xosc --reloadWorld --record .
+python3 metrics_manager.py --log 'BrakeCheckScenario scenario.log' --metric srunner/metrics/examples/get_adv_loc_per_frame_separated_val.py
+This seems to have retrieved the adversary locations in milliseconds rather than frames(?) - Upon further investigation, it seems like the framerate changes from 100 to 20 @ t=20s when the adversary vehicle starts to move 
+
+Could try setting CARLA to run in constant fps, or manipulate adversary location extraction in SR metrics_manager, or set '--simulator_fps' flag to 100 in Pylot - although unsure if the observed fps change coincidentally occurs at the timestamp when the adversary starts moving or that's when the '--simulator_fps' flag is passed to CARLA 
+Safest option would be to try and set CARLA to constant fps - ~/CARLA_0.9.15/PythonAPI/util$ python3 config.py --fps 20 in scene_env: source /home/levantepaksy/scenario_runner-0.9.15/scene_env/bin/activate
+Setting fps to 20 made no difference - try setting to 100 - does not make a difference
+Passing the '--sync' flag in SR seems to have fixed the recording issue
+
+Running the simulation with '--sync' seems to desync the ego - as tick is now controlled by SR rather than Pylot
+Slight desync between Pylot and CARLA - Pylot timestamp seems to be behind - try to inject in terms of CARLA frames as ideated above
+
+
+July 5 2024
+Try using CARLA timestamps in terms of 'elapsed_seconds' rather than frames - elapsed_seconds starts at the start of the scenario rather that at the start of execution of CARLA unlike frames - should be easier to implement
+Implemented the above, however quite a large delay is observed between CARLA and SR timestamps
+
+Try finding the amount of offset between Pylot and CARLA clocks at execution time and use that to adjust the timing of injection 
+
+Restarting CARLA reduces the delay - cruical to do so for every scenario execution
+
+Hardcoding a -2 second shift reduced the errors to below 2, but massive spikes in error occur when the adversary leaves the radius of prediction and enters the radius again
+Try to find a way to calculate a reasonable amount of timeshift for each execution
+
+ 
+July 7 2024
+Tried several methods of calculating time offset at runtime - none were sufficient
+Currently using 1.3s found empirically from log file (Pylot timestamp @ first deviation from groundtruth initial coordinates minus Scenario timestamp @ initial accel)
+Error is below ~2 - most likely due to rounding errors (from timestamp calc, floating point, etc.) - probably as accurate as can be
+Try other offset values to find the one that minimises the error the most
+
+Offset of 1.4s resulted in errors of not much more than 1.5 max, mostly around 1 or below - probably near limit
+Offset of 1.45s resulted in errors of not much more than 1 - this is most likely as low as we will get
+
+Massive error spike when adversary leaves + enters again the prediction radius - increase target speed so that ego can keep up with adversary - for larger erros, ego was able to keep up with adversary more consistantly and overall seemed to drive more efficiently - double check how prediction evaluation is performed
+
+
+July 9 2024
+Created finalised scenarios for experiments
+
+
+July 10 2024
+Made checklist for easy tracking of executed experiments
+Finalised 'thesis.conf'
+
+Run pylot using format below:
+python3 pylot.py --flagfile=configs/thesis.conf --log_file_name=fps20_int1_pred5_run1.log --csv_log_file_name=fps20_int1_pred5_run1.csv
+
+Issue: prediction is off by 90degrees - due to the orientation of the road section, global y-coord is changing but prediction is expects change in x-coord because x-coord is the direction the ego is facing - see if 'to_world_coordinates' function fixes issue, worst case swap the input relative x and y coordinates
+Fixed issue above - code should now work regardless of vehicle orientation
+
+May need to adjust offset - current large offset may be due to CARLA running for a while (confirmed - still may need to adjust offset - make it adjustable using flag?)
+
+Issue - ego doesn't start moving - issue seems to be fixed + '--visualize_prediction' seems to be working, however feed is not realtime 
+
+
+July 11 2024
+Added flags '--clock_offset' and '--prediction_interval_multiplier' to allow easier editing of these parameters w/o needing to edit code directly
+'--clock_offset' is for synchronising simulator and scenario runner clocks
+
+python3 pylot.py --flagfile=configs/thesis.conf --log_file_name=fps20_int1_pred5_run1.log --csv_log_file_name=fps20_int1_pred5_run1.csv --clock_offset=2.1 --prediction_interval_multiplier=1
+
+
+July 12 2024
+Implemented clock synchronisation by sending scenario runner timestamp directly to Pylot via redis - i.e. using scenario runner clock exclusively for both injection and scenario execution
+
+Max error is now < 1, this is as accurate as we could get
+
+Disabled steering in 'pid_control_operator.py'
+
+Cleaned up 'linear_predictor_operator.py' (pseudo-prediction) code
+
+Ran the first scenario configuration 10 times
+
+Created metrics module to extract key scenario data for analysis - run with below command
+python3 metrics_manager.py --log ' ' --metric srunner/metrics/examples/scenario_data_extractor.py
+
+
+July 15 2024
+Maximum difference between the instantaneous (in terms of seconds) y-location of the 10 runs was found to be slightly less than 4m, w/ most being under 2m
+Using percentage error calculation, the maximum error is around 10%, however since the values are positions/coordinates rather than distance, this is not an appropriate measure of error (if the difference in instantaneous positions between the 2 extreme runs is constant throughout the scenario, e.g. 1m, the percentage error @ y=100 would be 1%, while @ y=25 would be 4% - even though the difference is the exact same)
+Normalising the distance relative to the minimum distance travelled by the ego (calculated as min starting position minus max ending position, travel direction = descending y) yields around 1.2% "error" - relatively small error therefore will not be running the same scenario combinations multiple times to save time
+
+python3 pylot.py --flagfile=configs/thesis.conf --log_file_name=fps20_int1_pred10_run1.log --csv_log_file_name=fps20_int1_pred10_run1.csv --prediction_interval_multiplier=1 --prediction_num_future_steps=10 --tracking_num_steps=10
+
+Ran all combinations for Straight scenario - driving seems to be practically the same across all combinations
+Try testing with a scenario where leading vehicle stays static for the first 19s and is 20m apart from ego just like in the initial testing phase
+For 'fps20_int20_pred5' - ego does not move
+Appears to be the same for 'fps20_int5_pred5' - seems to have been injecting the initial prediction value for the entire scenario duration
+Injection not working correctly - check later whether it could be fixed, if not stick with 15s+10m -- forgot to '--sync' SR when getting adv loc
+
+
+July 17 2024
+Using the 19s+20m scenario setup made no significant difference to the apparent manoeuvre of the ego - stick with 15s+10m
+Strange deviation of ego lateral position found across 10 runs of the initial scenario configuration with no apparent cause. Steering is 0, and wheel physics angles also confirmed to be 0. This deviation in lateral position might be cause of deviation in longitudinal position across scenario configs. In which case, it might be possible to correct the lateral deviation in post to obtain accurate/usable driving data from a single run.  
+
+
+July 26 2024
+Likely explanation of lateral deviation due to imprecise physics simulation? While physics substepping options have been unaltered from default values, and should in theory be sufficient - might be too coarse? try reducing physics substep size to 0.005 (half of default value) and keep number of substeps at default of 10. 0.005*10=0.05 which equals 1/fps (fixed delta time)
+
+CARLA recommends: 'fixed_delta_seconds <= max_substep_delta_time * max_substeps' and 'max_substep_delta_time <= 0.01'
+IF timestep (fixed_delta_seconds) is greater, there will not be enough physical timesteps therefore no synchrony between physics and delta time
+
+Although default settings should satisfy the recommendations, try changing to substep size = 0.005 on 'BrakeCheck' scenario
+Changing substep size broke 'pylot/pylot/simulation/carla_operator.py' --- set substep in 'utils.py' of Morphing's fork (initially used erdos master branch)
+
+From looking at overview/bird's eye view camera - deviation in lateral position observed across the executions
+Source of this error may not be imprecise physics simulation or from CARLA at all, but rather on Pylot side? 
+
+
+July 29 2024
+Record actual linear prediction data for the 4 scenarios
+All data collections are now complete
