@@ -1,0 +1,53 @@
+## Outline of Pylot + ScenarioRunner Usage ##
+
+
+# Start docker, run simulator and start ssh (when launching a second time after initial setup - for initial setup refer to pylot repo)
+nvidia-docker start pylot
+nvidia-docker exec -i -t pylot /home/erdos/workspace/pylot/scripts/run_simulator.sh
+nvidia-docker exec -i -t pylot sudo service ssh start
+
+
+# ssh into docker container
+ssh -p 20022 -X erdos@localhost
+
+
+# Test pylot.py
+cd workspace/pylot/
+python3 pylot.py --flagfile=configs/detection.conf --visualize_detected_obstacles [--simulator_host=172.17.0.1]
+
+
+# Test ScenarioRunner connectivity
+cd workspace/scenario_runner
+python3 scenario_runner.py --scenario FollowLeadingVehicle_2 --reloadWorld [--record .] # to record .log/.json -->  export SCENARIO_RUNNER_ROOT=/home/erdos/workspace/scenario_runner
+export SCENARIO_RUNNER_ROOT=/home/paperspace/Downloads/scenario_runner-0.9.15
+
+cd workspace/pylot # in another terminal (make sure to ssh into container)
+python3 pylot.py --scenario_runner --flagfile=configs/mpc.conf
+
+
+# Run OpenSCENARIO-based scenario
+python3 scenario_runner.py --openscenario <path/to/xosc-file> --reloadWorld
+
+# ScenarioRunner Metrics Manager
+sudo apt install python3-gi-cairo # Fixes TypeError: Couldn't find foreign struct converter for 'cairo.Context'
+python3 metrics_manager.py --log FollowLeadingVehicle_2.log --metric srunner/metrics/examples/distance_between_vehicles.py
+
+# Copy file from docker
+nvidia-docker cp pylot:home/erdos/workspace/scenario_runner/[file_name] .
+
+# Copy file to docker
+nvidia-docker cp [file_name] pylot:home/erdos/workspace/scenario_runner/
+
+# Stop docker
+nvidia-docker stop pylot
+
+
+# When running SR, use --trafficManagerPort to change port from 8000 (default) to e.g. 8001 if following error occurs:
+RuntimeError: trying to create rpc server for traffic manager; but the system failed to create because of bind error.
+However - Pylot doesn't seem to like custom traffic manager port
+(UPDATE: can specify traffic manager port in Pylot using: -carla_traffic_manager_port)
+
+Rebooting Paperspace session (equivalent to restarting PC) seems to have fixed the issue
+Force stopping the scenario (with ctrl+z) seems to cause the issue
+
+pkill -9 -1

@@ -1,0 +1,35 @@
+setuptools              58.1.0 (pre-installed)              
+
+https://stackoverflow.com/questions/71830572/how-to-install-egg-file-with-easy-install
+
+pip3 install redis
+copy .egg from host to docker and install using sudo python3 -m easy_install (temporarily downgrade setuptools==41.0.0 or 42.0.0)
+
+run scenario_runner and carla outside of docker (ver 0.9.15) - scenario_runner in venv
+python3 -m pip install -r requirements.txt
+source /home/paperspace/Downloads/sr_env/bin/activate
+
+export CARLA_ROOT=/home/paperspace/Downloads/CARLA_0.9.15
+export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI/carla/dist/carla-0.9.15-py3.7-linux-x86_64.egg:${CARLA_ROOT}/PythonAPI/carla/agents:${CARLA_ROOT}/PythonAPI/carla
+
+python3 scenario_runner.py --scenario FollowLeadingVehicle_2 --reloadWorld --record . 
+
+python3 pylot.py --flagfile=configs/prediction.conf --simulator_host=172.17.0.1 --scenario_runner --control pid --planning_type frenet_optimal_trajectory --log_file_name=prediction.log --csv_log_file_name=prediction.csv
+
+
+python3 pylot.py --flagfile=configs/prediction.conf --simulator_host=172.17.0.1 --scenario_runner --control pid --planning_type frenet_optimal_trajectory --max_road_width_l=1 --max_road_width_r=1
+# setting max road with to left/right = 1 prevents model from trying to overtake lead vehicle
+
+set scenario_runner as --sync and pylot as --simulator_mode asynchronous-fixed-time-step + simulator_fps=300
+
+
+
+
+python3 metrics_manager.py --metric srunner/metrics/examples/distance_between_vehicles.py --log FollowLeadingVehicle_2.log
+
+
+
+
+
+
+docker cp Downloads/linear_predictor_operator.py pylot:home/erdos/workspace/pylot/pylot/prediction

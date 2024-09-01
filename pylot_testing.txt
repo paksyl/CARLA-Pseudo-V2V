@@ -1,0 +1,53 @@
+Apr 30
+
+Test 1
+SR --sync
+pylot asynchronous-fixed-time-step, 100fps
+max_road_width_l/_r = 0.2
+
+
+Test 2
+SR --host 172.17.0.1
+pylot: person_avoidance_frenet.conf
+python3 pylot.py --flagfile=configs/scenarios/person_avoidance_frenet.conf --simulator_host=172.17.0.1 --visualize_prediction --max_road_width_l 0.1 --max_road_width_r 0.1 --evaluate-prediction
+
+
+TODO  - feed custom true lead vehicle trajectory - no need to assess vehicle performance for now
+1. Record built-in linear prediction output
+2. Format feeding data to comply with 1. - need to restructure hardcoded trajectory to be per frame (rather than per sec as is currently the case [DONE])
+implement way of sampling per frame data at given fps: request msg.timestep and /1000 and convert to int == key => go to key*fps item in coord list and sample next n coords based on num pred requested  
+
+
+
+To use metrics_manager
+metrics_manager.py: added 'self._client.set_timeout(2000)' under # Get the correct world and load it
+
+metrics_parser.py: comment out all references to 'sim_time' - seems to be removed in latest version of SR
+
+update numpy version from 1.18.4 to 1.20
+
+https://stackoverflow.com/questions/56656777/userwarning-matplotlib-is-currently-using-agg-which-is-a-non-gui-backend-so
+
+plt.savefig() instead of plt.show() --> matplotlib is running in headless mode and cannot display graph
+
+python3 metrics_manager.py --metric srunner/metrics/examples/get_adv_loc_per_frame.py --log FollowLeadingVehicle_2.log (in sr_env)
+
+
+
+
+
+Test 3
+python3 pylot.py --flagfile=configs/scenarios/person_avoidance_frenet.conf --simulator_host=172.17.0.1 --visualize_prediction --max_road_width_l 0.1 --max_road_width_r 0.1 --evaluate_prediction --tracking_num_steps 5 --prediction_num_future_steps 5 --log_file_name=pseudo_linear_test.log --csv_log_file_name=pseudo_linear_test.csv --simulator_mode asynchronous-fixed-time-step --goal_location '1000.0, 199.0, 0.0'
+
+pseudo prediction finally working (somewhat)
+good enough accuracy for the first ~300 frames which was expected, as only ~300 frames worth of data loaded
+Adversary_Location.csv in /pylot/pylot/prediction
+
+
+Running Custom Scenarios:
+python3 scenario_runner.py --openscenario srunner/examples/StraightScenario.xosc --reloadWorld
+python3 scenario_runner.py --openscenario srunner/examples/ReverseScenario.xosc --reloadWorld
+python3 scenario_runner.py --openscenario srunner/examples/BrakeCheckScenario.xosc --reloadWorld
+
+modified 'srunner/scenariomanager/actorcontrols/visualizer.py' to also output current time
+csv2xosc works as intended
